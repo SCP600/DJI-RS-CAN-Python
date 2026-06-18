@@ -10,21 +10,24 @@
 - **通訊參數**：DJI CAN 總線預設使用 1 Mbps 的鮑率 (Baudrate)。
 
 ### 2. 序列通訊與 CAN 轉換層 (Data Link Layer)
-- **技術選擇**：優先使用 `python-can` 套件搭配對應的轉接器介面（如 `robotell` 或 `slcan` 介面，視硬體實際支援的協定而定）。
-  - *效能評估*：對於控制雲台（更新頻率通常為 10Hz~50Hz）而言，直接使用套件與手刻 `pyserial` 處理的**效能差異微乎其微**。最大的好處是 `python-can` 提供了標準化的 `can.Message` API，可以避免我們重複造輪子，讓程式碼更乾淨、更好維護。
-  - *降級 (Fallback) 方案*：若硬體通訊協定較為特殊，與套件內建的解析有衝突，我們再改為手刻 `pyserial` 擷取 ASCII 字串 (`t1238...`) 來解析。
+- **技術選擇**：全面使用 `python-can` 套件，並直接指定 `interface='robotell'`。
+  - *硬體原生支援*：`python-can` 已內建 Robotell 專屬的二進位協議解析介面，無需手動透過 `pyserial` 撰寫封包拆解邏輯。底層通訊仍會自動依賴 `pyserial` 來完成 USB-to-Serial 的資料傳輸。
+  - *無縫切換*：開發初期使用 `interface='virtual'` 建立虛擬 CAN 匯流排進行模擬測試。未來取得實體 Robotell 轉接器後，僅需將介面改為 `robotell`，並設定 `channel='COMx'` (對應的 COM Port)、`ttyBaudrate=115200` 以及 DJI 所要求的 `bitrate=1000000` (1 Mbps)，上層邏輯程式碼**完全不需修改**。
+  - *效能優勢*：使用標準化的 `can.Message` API，讓封包收發更為穩定，維護性也大幅提升。
 
 ### 3. DJI 協議封裝層 (DJI Protocol Layer)
 參考 C++ 版本的 `ConstantRobotics/DJIR_SDK` 邏輯，並將其移植至 Python。
 - **封包結構 (Packet Packing)**：
   - `SOF` (起始字節 0xAA)
-  - `Length` (封包長度)
-  - `Version` & `Session`
-  - `CRC8` (Header 校驗碼)
+  - `Length` (封包長度 2 bytes, Little Endian)
+  - `CmdType` (1 byte, 控制指令為 0x03)
+  - `ENC`, `RES1-3` (共 4 bytes, 皆為 0x00)
+  - `Seq_Num` (流水號 2 bytes, Big Endian)
+  - `CRC16` (Header 校驗碼，針對前 10 bytes 計算，以 Little Endian 附加)
   - `CmdSet` / `CmdId` (控制雲台的指令集)
-  - `Payload` (資料內容，如旋轉的速度或角度)
-  - `CRC16` (完整封包的校驗碼)
-- **核心實作**：`crc8` 與 `crc16` 的查表法 (Lookup Table) 演算法實作，以通過 DJI 設備的資料驗證。
+  - `Payload` (資料內容，如旋轉的速度或角度，Little Endian)
+  - `CRC32` (完整封包的校驗碼，針對前面所有 bytes 計算，以 Little Endian 附加)
+- **核心實作**：使用特定的 `crc16` (XorIn: 0xc55c) 與 `crc32` (XorIn: 0xc55c0000) 演算法實作，以通過 DJI 設備的資料驗證。
 
 ### 4. 應用控制層 (Application Layer)
 封裝出乾淨的 API 供您的主程式直接呼叫。
